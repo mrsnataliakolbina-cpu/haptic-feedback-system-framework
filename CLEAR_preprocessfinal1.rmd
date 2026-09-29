@@ -1,0 +1,393 @@
+```{r}
+# Load the CLEAR dataset and inspect its dimensions and structure
+library(tidyverse)
+library(readxl)
+
+column_types <- rep("guess", 28)
+column_types[9] <- "text"  # Lexile Band
+
+clear_raw <- read_excel(
+  "/Users/nataliakolbina/workspace/pda-course-work/CLEAR_original/CLEAR_corpus_final.xlsx",
+  sheet = "Data",
+  col_types = column_types,
+  guess_max = 5000
+)
+
+names(clear_raw) <- make.names(names(clear_raw))
+
+clear_raw <- clear_raw %>%
+  rename(
+    BT.Easiness = BT_easiness,
+    BT.s.e. = s.e.
+  )
+
+dim(clear_raw)
+glimpse(clear_raw)
+```
+```{r}
+# Clean the text and target data, then inspect BT.Easiness
+clear <- clear_raw %>%
+  filter(
+    !is.na(Excerpt),
+    trimws(Excerpt) != "",
+    !is.na(BT.Easiness)
+  )
+dim(clear)
+summary(clear$BT.Easiness)
+sd(clear$BT.Easiness)
+```
+```{r}
+# Visualise the distribution of the readability target
+ggplot(clear, aes(x = BT.Easiness)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of BT Easiness",
+    x = "BT Easiness",
+    y = "Frequency"
+  )
+```
+```{r}
+# Check the number and percentage of missing values in each variable
+missing_values <- clear %>%
+  summarise(
+    across(
+      everything(),
+      ~sum(is.na(.))
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Variable",
+    values_to = "Missing"
+  ) %>%
+  mutate(
+    Percentage = Missing / nrow(clear) * 100
+  ) %>%
+  arrange(desc(Percentage))
+
+missing_values
+```
+```{r}
+# Select the traditional readability features available in the CLEAR dataset
+readability_features <- c(
+  "Flesch.Reading.Ease",
+  "Flesch.Kincaid.Grade.Level",
+  "Automated.Readability.Index",
+  "SMOG.Readability",
+  "New.Dale.Chall.Readability.Formula",
+  "CAREC",
+  "CAREC_M",
+  "CARES",
+  "CML2RI",
+  "Google.WC",
+  "Sentence.Count.v1",
+  "Sentence.Count.v2",
+  "Paragraphs"
+)
+
+available_features <- readability_features[
+  readability_features %in% names(clear)
+]
+available_features
+```
+```{r}
+# Visualise the distributions of the available readability features
+clear %>%
+  select(all_of(available_features)) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Feature",
+    values_to = "Value"
+  ) %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 30, na.rm = TRUE) +
+  facet_wrap(
+    ~Feature,
+    scales = "free",
+    ncol = 3
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Distributions of CLEAR Readability Features",
+    x = "Value",
+    y = "Frequency"
+  )
+```
+```{r}
+# Examine how each traditional readability feature relates to BT.Easiness
+cor_data <- clear %>%
+  select(
+    BT.Easiness,
+    all_of(available_features)
+  )
+
+cor_target <- cor_data %>%
+  summarise(
+    across(
+      -BT.Easiness,
+      ~cor(
+        .,
+        cor_data$BT.Easiness,
+        use = "pairwise.complete.obs",
+        method = "spearman"
+      )
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Feature",
+    values_to = "Correlation"
+  ) %>%
+  arrange(desc(abs(Correlation)))
+
+cor_target
+```
+
+
+```{r}
+# Check passage length before readability modelling
+clear <- clear %>%
+  mutate(
+    word_length = str_count(Excerpt, "\\S+")
+  )
+
+summary(clear$word_length)
+
+ggplot(clear, aes(x = word_length)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Excerpt Length",
+    x = "Number of Words",
+    y = "Frequency"
+  )
+```
+```{r}
+# Examine the relationship between passage length and BT.Easiness
+ggplot(
+  clear,
+  aes(
+    x = word_length,
+    y = BT.Easiness
+  )
+) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(
+    method = "loess",
+    se = FALSE
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Text Length vs BT Easiness",
+    x = "Word Count",
+    y = "BT Easiness"
+  )
+```
+```{r}
+# Test the association between passage length and BT.Easiness
+cor.test(
+  clear$word_length,
+  clear$BT.Easiness,
+  method = "spearman",
+  exact = FALSE
+)
+```
+
+```{r}
+# Examine the uncertainty in BT.Easiness ratings
+summary(clear$BT.s.e.)
+
+ggplot(clear, aes(x = BT.s.e.)) +
+  geom_histogram(
+    bins = 30,
+    na.rm = TRUE
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Uncertainty in BT Easiness",
+    x = "BT Standard Error",
+    y = "Frequency"
+  )
+```
+
+```{r}
+# Check whether uncertainty in BT.Easiness varies with the target value
+ggplot(
+  clear,
+  aes(
+    x = BT.s.e.,
+    y = BT.Easiness
+  )
+) +
+  geom_point(alpha = 0.4) +
+  theme_minimal()
+```
+
+```{r}
+# Check how many passages remain after cleaning
+nrow(clear_raw)
+nrow(clear)
+
+nrow(clear_raw) - nrow(clear)
+```
+```{r}
+# Select the variables required for readability modelling
+clear_model <- clear %>%
+  select(
+    Excerpt,
+    BT.Easiness,
+    BT.s.e.,
+    Flesch.Reading.Ease,
+    Flesch.Kincaid.Grade.Level,
+    Automated.Readability.Index,
+    SMOG.Readability,
+    New.Dale.Chall.Readability.Formula,
+    CAREC,
+    CAREC_M,
+    CARES,
+    CML2RI,
+    Google.WC,
+    Sentence.Count.v1,
+    Sentence.Count.v2,
+    Paragraphs
+  )
+```
+
+```{r}
+# Check missing values in the final modelling variables
+clear_model %>%
+  summarise(
+    across(
+      everything(),
+      ~sum(is.na(.))
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Variable",
+    values_to = "Missing"
+  ) %>%
+  arrange(desc(Missing))
+```
+
+```{r}
+# Check for duplicated passages before splitting the dataset
+duplicates <- clear_model %>%
+  count(Excerpt) %>%
+  filter(n > 1)
+
+nrow(duplicates)
+```
+
+```{r}
+# Set a seed to make the dataset split reproducible
+set.seed(42)
+```
+
+```{r}
+# Split the cleaned data into 70% training, 15% validation and 15% test sets
+n <- nrow(clear_model)
+
+train_index <- sample(
+  seq_len(n),
+  size = floor(0.70 * n)
+)
+
+train <- clear_model[train_index, ]
+
+remaining <- clear_model[-train_index, ]
+
+validation_index <- sample(
+  seq_len(nrow(remaining)),
+  size = floor(0.50 * nrow(remaining))
+)
+
+validation <- remaining[validation_index, ]
+
+test <- remaining[-validation_index, ]
+```
+
+```{r}
+# Verify the size of each split and confirm that all passages are retained
+nrow(train)
+nrow(validation)
+nrow(test)
+
+nrow(train) + nrow(validation) + nrow(test)
+```
+
+```{r}
+# Compare BT.Easiness summary statistics across the three dataset splits
+train %>%
+  summarise(
+    mean = mean(BT.Easiness),
+    sd = sd(BT.Easiness),
+    min = min(BT.Easiness),
+    max = max(BT.Easiness)
+  )
+
+validation %>%
+  summarise(
+    mean = mean(BT.Easiness),
+    sd = sd(BT.Easiness),
+    min = min(BT.Easiness),
+    max = max(BT.Easiness)
+  )
+
+test %>%
+  summarise(
+    mean = mean(BT.Easiness),
+    sd = sd(BT.Easiness),
+    min = min(BT.Easiness),
+    max = max(BT.Easiness)
+  )
+```
+
+```{r}
+# Compare BT.Easiness distributions across the dataset splits
+bind_rows(
+  train %>% mutate(Split = "Train"),
+  validation %>% mutate(Split = "Validation"),
+  test %>% mutate(Split = "Test")
+) %>%
+  ggplot(aes(x = BT.Easiness)) +
+  geom_density() +
+  facet_wrap(~Split) +
+  theme_minimal() +
+  labs(
+    title = "BT Easiness Distribution Across Dataset Splits",
+    x = "BT Easiness",
+    y = "Density"
+  )
+```
+
+```{r}
+# Examine passage-length percentiles
+quantile(
+  clear$word_length,
+  probs = c(.50, .75, .90, .95, .99),
+  na.rm = TRUE
+)
+```
+
+```{r}
+# Export the train, validation and test datasets for readability modelling
+write.csv(
+  train,
+  "clear_train.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  validation,
+  "clear_validation.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  test,
+  "clear_test.csv",
+  row.names = FALSE
+)
+```
